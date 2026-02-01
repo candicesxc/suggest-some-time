@@ -9,7 +9,7 @@ from flask_cors import CORS
 import datetime
 import pytz
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 import pickle
@@ -18,23 +18,13 @@ import os
 import re
 import json
 import base64
+import binascii
 from typing import Any, Dict, Optional
 from openai import OpenAI
 from dotenv import load_dotenv
 
 # Load environment variables from env file (local) or environment (cloud)
 load_dotenv('env')
-
-app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'coffee-chat-secret-key-2024')
-
-# Enable CORS for GitHub Pages frontend
-CORS(app, origins=[
-    'https://candicesxc.github.io',
-    'https://candiceshen.com',
-    'http://localhost:5050',
-    'http://127.0.0.1:5050'
-])
 
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
@@ -64,8 +54,79 @@ def _parse_google_credentials(value: str) -> Dict[str, Any]:
     try:
         decoded = base64.b64decode(raw_value).decode('utf-8')
         return json.loads(decoded)
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError):
         return json.loads(raw_value)
+
+
+def _client_config_from_env() -> Optional[Dict[str, Any]]:
+    client_id = os.environ.get('GOOGLE_OAUTH_CLIENT_ID')
+    client_secret = os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET')
+    redirect_uri = os.environ.get('GOOGLE_OAUTH_REDIRECT_URI')
+
+    if client_id and client_secret:
+        if not redirect_uri:
+            redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+        client_type = 'web' if redirect_uri.startswith('http') else 'installed'
+        return {
+            client_type: {
+                'client_id': client_id,
+                'client_secret': client_secret,
+                'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                'token_uri': 'https://oauth2.googleapis.com/token',
+                'redirect_uris': [redirect_uri],
+            }
+        }
+
+    if os.path.exists(CLIENT_SECRETS_PATH):
+        with open(CLIENT_SECRETS_PATH, 'r', encoding='utf-8') as client_file:
+            return json.load(client_file)
+
+    creds_value = os.environ.get('GOOGLE_CREDENTIALS')
+    if creds_value:
+        creds_data = _parse_google_credentials(creds_value)
+        if creds_data.get('client_id') and creds_data.get('client_secret'):
+            redirect_uri = redirect_uri or 'urn:ietf:wg:oauth:2.0:oob'
+            client_type = 'web' if redirect_uri.startswith('http') else 'installed'
+            return {
+                client_type: {
+                    'client_id': creds_data['client_id'],
+                    'client_secret': creds_data['client_secret'],
+                    'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                    'token_uri': creds_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+                    'redirect_uris': [redirect_uri],
+                }
+            }
+
+    return None
+
+
+def _log_credentials_status() -> None:
+    creds_value = os.environ.get('GOOGLE_CREDENTIALS')
+    if not creds_value:
+        print('MISSING: GOOGLE_CREDENTIALS')
+        return
+
+    try:
+        _parse_google_credentials(creds_value)
+        print('Credentials Loaded Successfully')
+    except Exception as exc:
+        print('MISSING: GOOGLE_CREDENTIALS')
+        print(f'GOOGLE_CREDENTIALS parse error: {exc}')
+
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'coffee-chat-secret-key-2024')
+
+# Log credential status early for Render/production visibility
+_log_credentials_status()
+
+# Enable CORS for GitHub Pages frontend
+CORS(app, origins=[
+    'https://candicesxc.github.io',
+    'https://candiceshen.com',
+    'http://localhost:5050',
+    'http://127.0.0.1:5050'
+])
 
 
 def _credentials_from_env() -> Optional[Credentials]:
@@ -160,6 +221,16 @@ def get_calendar_service():
         return None
 
     return build('calendar', 'v3', credentials=creds)
+
+
+def _credentials_missing_for_request() -> bool:
+    if os.environ.get('GOOGLE_CREDENTIALS'):
+        return False
+    if os.path.exists(TOKEN_PATH):
+        return False
+    if os.path.exists(CLIENT_SECRETS_PATH):
+        return False
+    return True
 
 
 def get_busy_times(service, start_date, end_date):
@@ -540,6 +611,32 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/auth/link')
+def auth_link():
+    client_config = _client_config_from_env()
+    if not client_config:
+        return jsonify({
+            'error': 'Missing OAuth client configuration. Set GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET or provide credentials.json.'
+        }), 400
+
+    flow = Flow.from_client_config(client_config, scopes=SCOPES)
+    redirect_uri = os.environ.get('GOOGLE_OAUTH_REDIRECT_URI')
+    if redirect_uri:
+        flow.redirect_uri = redirect_uri
+    elif 'web' in client_config and client_config['web'].get('redirect_uris'):
+        flow.redirect_uri = client_config['web']['redirect_uris'][0]
+    elif 'installed' in client_config and client_config['installed'].get('redirect_uris'):
+        flow.redirect_uri = client_config['installed']['redirect_uris'][0]
+
+    authorization_url, state = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true',
+        prompt='consent'
+    )
+    session['oauth_state'] = state
+    return jsonify({'authorization_url': authorization_url})
+
+
 @app.route('/generate', methods=['POST'])
 def generate_reply():
     data = request.json
@@ -624,10 +721,15 @@ def generate_reply():
     date_range = data.get('date_range', 'two_weeks')
 
     # Get calendar service
+    if _credentials_missing_for_request():
+        return jsonify({
+            'error': 'MISSING: GOOGLE_CREDENTIALS'
+        }), 400
+
     service = get_calendar_service()
     if not service:
         return jsonify({
-            'error': 'Calendar not connected. Check that GOOGLE_CREDENTIALS is set correctly in environment variables, or run locally to authenticate.'
+            'error': 'Calendar not connected. GOOGLE_CREDENTIALS is set but could not be loaded. Verify refresh_token/client_id/client_secret.'
         }), 400
 
     # Get date range
@@ -822,10 +924,15 @@ def compose_email():
     context = data.get('context', '')
 
     # Get calendar service
+    if _credentials_missing_for_request():
+        return jsonify({
+            'error': 'MISSING: GOOGLE_CREDENTIALS'
+        }), 400
+
     service = get_calendar_service()
     if not service:
         return jsonify({
-            'error': 'Calendar not connected. Check that GOOGLE_CREDENTIALS is set correctly in environment variables, or run locally to authenticate.'
+            'error': 'Calendar not connected. GOOGLE_CREDENTIALS is set but could not be loaded. Verify refresh_token/client_id/client_secret.'
         }), 400
 
     # Get date range
