@@ -66,8 +66,23 @@ def get_calendar_service():
     google_creds_env = os.environ.get('GOOGLE_CREDENTIALS')
     if google_creds_env:
         try:
+            # Clean up the base64 string (remove whitespace, fix padding)
+            google_creds_env = google_creds_env.strip()
+            # Fix base64 padding if needed
+            padding_needed = 4 - (len(google_creds_env) % 4)
+            if padding_needed != 4:
+                google_creds_env += '=' * padding_needed
+
             # Decode base64 credentials from environment
             creds_data = json.loads(base64.b64decode(google_creds_env))
+
+            # Validate required fields
+            required_fields = ['refresh_token', 'client_id', 'client_secret']
+            missing = [f for f in required_fields if not creds_data.get(f)]
+            if missing:
+                print(f"GOOGLE_CREDENTIALS missing required fields: {missing}")
+                raise ValueError(f"Missing required credential fields: {missing}")
+
             creds = Credentials(
                 token=creds_data.get('token'),
                 refresh_token=creds_data.get('refresh_token'),
@@ -77,13 +92,20 @@ def get_calendar_service():
                 scopes=SCOPES
             )
 
-            # Refresh if expired
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
+            # Refresh if expired (tokens typically expire after 1 hour)
+            if creds and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    print("Successfully refreshed Google credentials")
+                except Exception as refresh_error:
+                    print(f"Error refreshing credentials: {refresh_error}")
+                    raise
 
             return build('calendar', 'v3', credentials=creds)
         except Exception as e:
             print(f"Error loading cloud credentials: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     # Local development: use file-based credentials
@@ -573,7 +595,7 @@ def generate_reply():
     service = get_calendar_service()
     if not service:
         return jsonify({
-            'error': 'Calendar not connected. Please run the app once from terminal to authenticate.'
+            'error': 'Calendar not connected. Check that GOOGLE_CREDENTIALS is set correctly in environment variables, or run locally to authenticate.'
         }), 400
 
     # Get date range
@@ -771,7 +793,7 @@ def compose_email():
     service = get_calendar_service()
     if not service:
         return jsonify({
-            'error': 'Calendar not connected. Please run the app once from terminal to authenticate.'
+            'error': 'Calendar not connected. Check that GOOGLE_CREDENTIALS is set correctly in environment variables, or run locally to authenticate.'
         }), 400
 
     # Get date range
