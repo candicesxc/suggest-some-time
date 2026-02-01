@@ -1237,6 +1237,26 @@
         let copyButtonReset = null;
         let pendingClarification = null;
 
+        // Helper function to safely fetch and parse JSON responses
+        async function fetchAPI(endpoint, options) {
+            const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
+
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                // Server returned HTML or other non-JSON response
+                if (response.status === 404) {
+                    throw new Error('Backend API not found. Please ensure the backend is deployed and running.');
+                } else if (response.status >= 500) {
+                    throw new Error('Backend server error. The server may be starting up - please try again in a moment.');
+                } else {
+                    throw new Error('Backend unavailable. Please check that the API server is running at: ' + API_BASE_URL);
+                }
+            }
+
+            const data = await response.json();
+            return data;
+        }
+
         async function generateReply() {
             const emailText = document.getElementById('emailInput').value;
 
@@ -1267,7 +1287,7 @@
             generateBtn.disabled = true;
 
             try {
-                const response = await fetch(`${API_BASE_URL}/generate`, {
+                const data = await fetchAPI('/generate', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1277,8 +1297,6 @@
                         ...clarificationData
                     })
                 });
-
-                const data = await response.json();
 
                 document.getElementById('loading').classList.remove('active');
                 generateBtn.disabled = false;
@@ -1481,7 +1499,7 @@
             document.getElementById('refineLoading').classList.add('active');
 
             try {
-                const response = await fetch(`${API_BASE_URL}/refine`, {
+                const data = await fetchAPI('/refine', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1491,8 +1509,6 @@
                         feedback: feedback
                     })
                 });
-
-                const data = await response.json();
 
                 document.getElementById('refineLoading').classList.remove('active');
 
@@ -1661,7 +1677,7 @@
             composeBtn.disabled = true;
 
             try {
-                const response = await fetch(`${API_BASE_URL}/compose`, {
+                const data = await fetchAPI('/compose', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1674,8 +1690,6 @@
                         context: context
                     })
                 });
-
-                const data = await response.json();
 
                 document.getElementById('loading').classList.remove('active');
                 composeBtn.disabled = false;
