@@ -141,6 +141,43 @@ These are already in `.gitignore`.
 
 To change the default signature name from "Candice", search for "Candice" in `app.py` and replace with your name.
 
+## Cloud Deployment (Render)
+
+To deploy this app publicly on Render:
+
+### 1. Generate Cloud Credentials
+
+First, make sure you've run the app locally and authenticated with Google Calendar (so `token.pickle` exists). Then run:
+
+```bash
+python generate_cloud_credentials.py
+```
+
+This will output a base64-encoded string containing your Google credentials.
+
+### 2. Deploy to Render
+
+1. Go to [Render Dashboard](https://dashboard.render.com/)
+2. Click "New" > "Web Service"
+3. Connect your GitHub repository
+4. Configure the service:
+   - **Name**: suggest-some-time
+   - **Environment**: Python 3
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `gunicorn app:app`
+5. Add Environment Variables:
+   - `OPENAI_API_KEY`: Your OpenAI API key
+   - `GOOGLE_CREDENTIALS`: The base64 string from step 1
+6. Click "Create Web Service"
+
+Your app will be live at `https://suggest-some-time.onrender.com` (or similar).
+
+### Important Notes for Cloud Deployment
+
+- The Google credentials are tied to YOUR Google account - the app will always check YOUR calendar
+- If you need to re-authenticate, run the app locally again and regenerate the cloud credentials
+- Free tier on Render may spin down after inactivity (first request takes ~30 seconds)
+
 ## License
 
 MIT License - feel free to use and modify!

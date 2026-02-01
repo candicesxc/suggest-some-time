@@ -32,3 +32,6 @@ Thumbs.db
 
 # Claude
 .claude/
+
+# Don't commit the credential generator output
+cloud_credentials.txt

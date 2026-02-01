@@ -13,16 +13,18 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 import pickle
 import os.path
+import os
 import re
 import json
+import base64
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# Load environment variables from env file
+# Load environment variables from env file (local) or environment (cloud)
 load_dotenv('env')
 
 app = Flask(__name__)
-app.secret_key = 'coffee-chat-secret-key-2024'
+app.secret_key = os.environ.get('SECRET_KEY', 'coffee-chat-secret-key-2024')
 
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
@@ -43,9 +45,39 @@ SLOT_INCREMENT = 30
 
 
 def get_calendar_service():
-    """Authenticate and return Google Calendar service"""
+    """Authenticate and return Google Calendar service.
+
+    Supports two modes:
+    1. Local development: Uses credentials.json and token.pickle files
+    2. Cloud deployment: Uses GOOGLE_CREDENTIALS environment variable (base64 encoded token)
+    """
     creds = None
 
+    # Check for cloud deployment credentials first
+    google_creds_env = os.environ.get('GOOGLE_CREDENTIALS')
+    if google_creds_env:
+        try:
+            # Decode base64 credentials from environment
+            creds_data = json.loads(base64.b64decode(google_creds_env))
+            creds = Credentials(
+                token=creds_data.get('token'),
+                refresh_token=creds_data.get('refresh_token'),
+                token_uri=creds_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+                client_id=creds_data.get('client_id'),
+                client_secret=creds_data.get('client_secret'),
+                scopes=SCOPES
+            )
+
+            # Refresh if expired
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+
+            return build('calendar', 'v3', credentials=creds)
+        except Exception as e:
+            print(f"Error loading cloud credentials: {e}")
+            return None
+
+    # Local development: use file-based credentials
     if os.path.exists('token.pickle'):
         with open('token.pickle', 'rb') as token:
             creds = pickle.load(token)
