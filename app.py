@@ -66,6 +66,13 @@ def get_calendar_service():
     google_creds_env = os.environ.get('GOOGLE_CREDENTIALS')
     if google_creds_env:
         try:
+            # Clean up the base64 string (remove whitespace, fix padding)
+            google_creds_env = google_creds_env.strip()
+            # Fix base64 padding if needed
+            padding_needed = 4 - (len(google_creds_env) % 4)
+            if padding_needed != 4:
+                google_creds_env += '=' * padding_needed
+
             # Decode base64 credentials from environment
             creds_data = json.loads(base64.b64decode(google_creds_env))
 
