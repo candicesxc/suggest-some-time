@@ -1,0 +1,34 @@
+# Credentials and secrets - NEVER commit these
+credentials.json
+token.pickle
+env
+.env
+
+# API keys
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env.bak/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# Claude
+.claude/
