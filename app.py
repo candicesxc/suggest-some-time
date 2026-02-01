@@ -5,6 +5,7 @@ Web interface for generating meeting availability responses
 """
 
 from flask import Flask, render_template, request, jsonify, session
+from flask_cors import CORS
 import datetime
 import pytz
 from google.oauth2.credentials import Credentials
@@ -25,6 +26,14 @@ load_dotenv('env')
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'coffee-chat-secret-key-2024')
+
+# Enable CORS for GitHub Pages frontend
+CORS(app, origins=[
+    'https://candicesxc.github.io',
+    'https://candiceshen.com',
+    'http://localhost:5050',
+    'http://127.0.0.1:5050'
+])
 
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
