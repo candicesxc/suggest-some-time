@@ -943,16 +943,31 @@ def generate_reply():
     date_range = data.get('date_range', 'two_weeks')
 
     # Get calendar service
-    if _credentials_missing_for_request():
-        return jsonify({
-            'error': 'MISSING: GOOGLE_CREDENTIALS'
-        }), 400
-
     service = get_calendar_service()
     if not service:
-        return jsonify({
-            'error': 'Calendar not connected. GOOGLE_CREDENTIALS is set but could not be loaded. Verify refresh_token/client_id/client_secret.'
-        }), 400
+        # Check which authentication method should be used
+        has_oauth_config = bool(os.environ.get('GOOGLE_OAUTH_CLIENT_ID') and os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET'))
+        has_google_creds = bool(os.environ.get('GOOGLE_CREDENTIALS'))
+
+        if has_oauth_config and not session.get('google_credentials'):
+            # OAuth is configured but user hasn't connected yet
+            return jsonify({
+                'error': 'Calendar not connected. Please connect your Google Calendar first.',
+                'auth_required': True,
+                'connect_url': '/auth/connect'
+            }), 401
+        elif has_google_creds:
+            # GOOGLE_CREDENTIALS exists but failed to load
+            return jsonify({
+                'error': 'Calendar authentication failed. GOOGLE_CREDENTIALS is set but could not be loaded. Check server logs for details.',
+                'debug_url': '/debug/credentials'
+            }), 400
+        else:
+            # No authentication configured at all
+            return jsonify({
+                'error': 'Calendar not configured. Administrator needs to set up either GOOGLE_OAUTH_CLIENT_ID/SECRET (multi-user) or GOOGLE_CREDENTIALS (single-user).',
+                'setup_guide': 'See OAUTH_SETUP_RENDER.md or SETUP_CREDENTIALS.md'
+            }), 500
 
     # Get date range
     start_date, end_date = parse_date_range(date_range, custom_start, custom_end)
@@ -1146,16 +1161,31 @@ def compose_email():
     context = data.get('context', '')
 
     # Get calendar service
-    if _credentials_missing_for_request():
-        return jsonify({
-            'error': 'MISSING: GOOGLE_CREDENTIALS'
-        }), 400
-
     service = get_calendar_service()
     if not service:
-        return jsonify({
-            'error': 'Calendar not connected. GOOGLE_CREDENTIALS is set but could not be loaded. Verify refresh_token/client_id/client_secret.'
-        }), 400
+        # Check which authentication method should be used
+        has_oauth_config = bool(os.environ.get('GOOGLE_OAUTH_CLIENT_ID') and os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET'))
+        has_google_creds = bool(os.environ.get('GOOGLE_CREDENTIALS'))
+
+        if has_oauth_config and not session.get('google_credentials'):
+            # OAuth is configured but user hasn't connected yet
+            return jsonify({
+                'error': 'Calendar not connected. Please connect your Google Calendar first.',
+                'auth_required': True,
+                'connect_url': '/auth/connect'
+            }), 401
+        elif has_google_creds:
+            # GOOGLE_CREDENTIALS exists but failed to load
+            return jsonify({
+                'error': 'Calendar authentication failed. GOOGLE_CREDENTIALS is set but could not be loaded. Check server logs for details.',
+                'debug_url': '/debug/credentials'
+            }), 400
+        else:
+            # No authentication configured at all
+            return jsonify({
+                'error': 'Calendar not configured. Administrator needs to set up either GOOGLE_OAUTH_CLIENT_ID/SECRET (multi-user) or GOOGLE_CREDENTIALS (single-user).',
+                'setup_guide': 'See OAUTH_SETUP_RENDER.md or SETUP_CREDENTIALS.md'
+            }), 500
 
     # Get date range
     start_date, end_date = parse_date_range(date_range)
