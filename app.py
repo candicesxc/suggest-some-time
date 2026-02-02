@@ -140,6 +140,11 @@ def _credentials_from_env() -> Optional[Credentials]:
     if missing:
         raise ValueError(f"GOOGLE_CREDENTIALS missing required fields: {missing}")
 
+    print(f"[DEBUG] Creating credentials with client_id: {creds_data.get('client_id')[:20]}...")
+    print(f"[DEBUG] Token URI: {creds_data.get('token_uri', 'https://oauth2.googleapis.com/token')}")
+    print(f"[DEBUG] Has refresh_token: {bool(creds_data.get('refresh_token'))}")
+    print(f"[DEBUG] Has token: {bool(creds_data.get('token'))}")
+
     creds = Credentials(
         token=creds_data.get('token'),
         refresh_token=creds_data.get('refresh_token'),
@@ -149,8 +154,18 @@ def _credentials_from_env() -> Optional[Credentials]:
         scopes=SCOPES
     )
 
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+    # Check if token is expired or not yet validated
+    # Note: creds.expired might be False even if token is invalid, so we should try to refresh
+    # if we have a refresh_token, regardless of the expired status
+    if creds.refresh_token:
+        try:
+            print("[DEBUG] Attempting to refresh token...")
+            # Always refresh to ensure we have a valid token
+            creds.refresh(Request())
+            print("[DEBUG] Token refreshed successfully")
+        except Exception as refresh_error:
+            print(f"[ERROR] Token refresh failed: {refresh_error}")
+            raise ValueError(f"Failed to refresh token: {refresh_error}")
 
     return creds
 
@@ -196,21 +211,42 @@ def get_calendar_service():
     google_creds_env = os.environ.get('GOOGLE_CREDENTIALS')
     if google_creds_env:
         try:
+            print("[DEBUG] Loading credentials from GOOGLE_CREDENTIALS environment variable...")
             creds = _credentials_from_env()
-            return build('calendar', 'v3', credentials=creds)
+            if not creds:
+                print("[ERROR] _credentials_from_env() returned None")
+                return None
+
+            print("[DEBUG] Building Calendar API service...")
+            service = build('calendar', 'v3', credentials=creds)
+
+            # Validate the service by making a simple API call
+            print("[DEBUG] Validating credentials with test API call...")
+            service.calendarList().list(maxResults=1).execute()
+            print("[DEBUG] Credentials validated successfully!")
+
+            return service
+        except ValueError as ve:
+            print(f"[ERROR] Credential validation error: {ve}")
+            import traceback
+            traceback.print_exc()
+            return None
         except Exception as e:
-            print(f"Error loading cloud credentials: {e}")
+            print(f"[ERROR] Error loading cloud credentials: {e}")
             import traceback
             traceback.print_exc()
             return None
 
     # Local development: use file-based credentials
+    print("[DEBUG] No GOOGLE_CREDENTIALS found, trying local token file...")
     creds = _credentials_from_local_token()
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
+            print("[DEBUG] Refreshing expired local token...")
             creds.refresh(Request())
         else:
+            print("[DEBUG] Starting interactive OAuth flow...")
             creds = _credentials_from_local_flow()
 
         if creds:
@@ -218,6 +254,7 @@ def get_calendar_service():
                 pickle.dump(creds, token)
 
     if not creds:
+        print("[ERROR] Could not obtain valid credentials")
         return None
 
     return build('calendar', 'v3', credentials=creds)
@@ -1097,6 +1134,83 @@ def calendar_status():
         return jsonify({'connected': True, 'calendar': calendar.get('items', [])})
     except Exception as exc:
         return jsonify({'connected': False, 'error': str(exc)}), 500
+
+
+@app.route('/debug/credentials')
+def debug_credentials():
+    """Debug endpoint to diagnose credential issues."""
+    debug_info = {
+        'timestamp': datetime.datetime.now(ET).isoformat(),
+        'environment_variables': {},
+        'files': {},
+        'credential_parsing': {},
+        'service_status': {}
+    }
+
+    # Check environment variables
+    google_creds_env = os.environ.get('GOOGLE_CREDENTIALS')
+    debug_info['environment_variables']['GOOGLE_CREDENTIALS_set'] = bool(google_creds_env)
+    if google_creds_env:
+        debug_info['environment_variables']['GOOGLE_CREDENTIALS_length'] = len(google_creds_env)
+        debug_info['environment_variables']['GOOGLE_CREDENTIALS_prefix'] = google_creds_env[:50] + '...' if len(google_creds_env) > 50 else google_creds_env
+
+    debug_info['environment_variables']['GOOGLE_OAUTH_CLIENT_ID_set'] = bool(os.environ.get('GOOGLE_OAUTH_CLIENT_ID'))
+    debug_info['environment_variables']['GOOGLE_OAUTH_CLIENT_SECRET_set'] = bool(os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET'))
+    debug_info['environment_variables']['GOOGLE_OAUTH_REDIRECT_URI'] = os.environ.get('GOOGLE_OAUTH_REDIRECT_URI', 'not set')
+
+    # Check files
+    debug_info['files']['TOKEN_PATH'] = TOKEN_PATH
+    debug_info['files']['token_exists'] = os.path.exists(TOKEN_PATH)
+    debug_info['files']['CLIENT_SECRETS_PATH'] = CLIENT_SECRETS_PATH
+    debug_info['files']['client_secrets_exists'] = os.path.exists(CLIENT_SECRETS_PATH)
+
+    # Try parsing credentials
+    if google_creds_env:
+        try:
+            creds_data = _parse_google_credentials(google_creds_env)
+            debug_info['credential_parsing']['parse_success'] = True
+            debug_info['credential_parsing']['has_token'] = bool(creds_data.get('token'))
+            debug_info['credential_parsing']['has_refresh_token'] = bool(creds_data.get('refresh_token'))
+            debug_info['credential_parsing']['has_client_id'] = bool(creds_data.get('client_id'))
+            debug_info['credential_parsing']['has_client_secret'] = bool(creds_data.get('client_secret'))
+            debug_info['credential_parsing']['token_uri'] = creds_data.get('token_uri', 'not set')
+
+            # Show first 20 chars of client_id for verification
+            if creds_data.get('client_id'):
+                debug_info['credential_parsing']['client_id_prefix'] = creds_data.get('client_id')[:20] + '...'
+
+            # Check for missing required fields
+            required_fields = ['refresh_token', 'client_id', 'client_secret']
+            missing = [field for field in required_fields if not creds_data.get(field)]
+            debug_info['credential_parsing']['missing_fields'] = missing
+
+        except Exception as e:
+            debug_info['credential_parsing']['parse_success'] = False
+            debug_info['credential_parsing']['error'] = str(e)
+            debug_info['credential_parsing']['error_type'] = type(e).__name__
+
+    # Try to get calendar service
+    try:
+        service = get_calendar_service()
+        if service:
+            debug_info['service_status']['service_created'] = True
+            try:
+                calendar = service.calendarList().list(maxResults=1).execute()
+                debug_info['service_status']['api_call_success'] = True
+                debug_info['service_status']['calendar_count'] = len(calendar.get('items', []))
+            except Exception as api_error:
+                debug_info['service_status']['api_call_success'] = False
+                debug_info['service_status']['api_error'] = str(api_error)
+                debug_info['service_status']['api_error_type'] = type(api_error).__name__
+        else:
+            debug_info['service_status']['service_created'] = False
+            debug_info['service_status']['error'] = 'get_calendar_service() returned None'
+    except Exception as e:
+        debug_info['service_status']['service_created'] = False
+        debug_info['service_status']['error'] = str(e)
+        debug_info['service_status']['error_type'] = type(e).__name__
+
+    return jsonify(debug_info)
 
 
 if __name__ == '__main__':

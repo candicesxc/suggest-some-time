@@ -178,6 +178,63 @@ Your app will be live at `https://suggest-some-time.onrender.com` (or similar).
 - If you need to re-authenticate, run the app locally again and regenerate the cloud credentials
 - Free tier on Render may spin down after inactivity (first request takes ~30 seconds)
 
+## Troubleshooting
+
+### Authentication Issues
+
+If you're experiencing Google Calendar authentication problems, we have comprehensive diagnostic tools:
+
+#### 1. Run the Test Script
+
+```bash
+python test_credentials.py
+```
+
+This will check your environment variables, credential parsing, token refresh, and API access.
+
+#### 2. Use the Debug Endpoint
+
+For deployed apps, visit the debug endpoint:
+
+```bash
+# Local
+curl http://localhost:5050/debug/credentials
+
+# Production
+curl https://your-app.onrender.com/debug/credentials
+```
+
+#### 3. Common Issues
+
+- **"Calendar not connected"**: Your GOOGLE_CREDENTIALS may be missing required fields or the refresh token is invalid
+- **"Token refresh failed"**: Re-authenticate locally and regenerate cloud credentials
+- **"Missing fields"**: Your credentials are incomplete - regenerate using `python generate_cloud_credentials.py`
+
+### Complete Documentation
+
+For detailed setup and troubleshooting:
+
+- 📖 [**Setup Guide**](SETUP_CREDENTIALS.md) - Step-by-step credential configuration
+- 🔧 [**Troubleshooting Guide**](TROUBLESHOOTING.md) - Common issues and solutions
+- ✅ **Test Script** - Run `python test_credentials.py` to diagnose issues
+- 🐛 **Debug Endpoint** - Visit `/debug/credentials` for detailed diagnostics
+
+### Quick Fixes
+
+```bash
+# Re-authenticate and regenerate credentials
+rm token.pickle
+python app.py
+python generate_cloud_credentials.py
+# Update GOOGLE_CREDENTIALS in your cloud platform
+
+# Test your credentials
+python test_credentials.py
+
+# Check credential status
+curl http://localhost:5050/debug/credentials | jq .
+```
+
 ## License
 
 MIT License - feel free to use and modify!
