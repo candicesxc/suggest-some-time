@@ -141,42 +141,59 @@ These are already in `.gitignore`.
 
 To change the default signature name from "Candice", search for "Candice" in `app.py` and replace with your name.
 
-## Cloud Deployment (Render)
+## Cloud Deployment
 
-To deploy this app publicly on Render:
+This app supports two deployment modes depending on your use case:
 
-### 1. Generate Cloud Credentials
+### 🔵 Single-User Mode (Recommended for Personal Use)
 
-First, make sure you've run the app locally and authenticated with Google Calendar (so `token.pickle` exists). Then run:
+**Use case**: You're the only person using the app, checks YOUR calendar
 
-```bash
-python generate_cloud_credentials.py
-```
+**Quick Setup**:
+1. Authenticate locally: `python app.py`
+2. Generate credentials: `python generate_cloud_credentials.py`
+3. Deploy to Render and set `GOOGLE_CREDENTIALS` environment variable
 
-This will output a base64-encoded string containing your Google credentials.
+📖 **Complete Guide**: [SETUP_CREDENTIALS.md](SETUP_CREDENTIALS.md)
 
-### 2. Deploy to Render
+### 🌐 Multi-User Mode (OAuth Web Flow)
+
+**Use case**: Multiple users, each connects their own calendar
+
+**Quick Setup**:
+1. Create OAuth 2.0 Client in [Google Cloud Console](https://console.cloud.google.com)
+2. Deploy to Render
+3. Set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` environment variables
+4. Users click "Connect Calendar" to authenticate with their Google account
+
+📖 **Complete Guide**: [OAUTH_SETUP_RENDER.md](OAUTH_SETUP_RENDER.md)
+
+### 🔄 Mode Comparison
+
+| Feature | Single-User | Multi-User |
+|---------|-------------|------------|
+| **Setup Time** | 10 minutes | 30 minutes |
+| **Calendar Access** | Always yours | Each user's own |
+| **Best For** | Personal tool | Public app |
+| **User Accounts** | Not needed | Recommended |
+| **Complexity** | Simple | Moderate |
+
+📊 **Detailed Comparison**: [DEPLOYMENT_MODES.md](DEPLOYMENT_MODES.md)
+
+### General Render Setup
 
 1. Go to [Render Dashboard](https://dashboard.render.com/)
 2. Click "New" > "Web Service"
 3. Connect your GitHub repository
-4. Configure the service:
-   - **Name**: suggest-some-time
-   - **Environment**: Python 3
+4. Configure:
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `gunicorn app:app`
-5. Add Environment Variables:
-   - `OPENAI_API_KEY`: Your OpenAI API key
-   - `GOOGLE_CREDENTIALS`: The base64 string from step 1
+5. Add Environment Variables based on your chosen mode (see guides above)
 6. Click "Create Web Service"
 
 Your app will be live at `https://suggest-some-time.onrender.com` (or similar).
 
-### Important Notes for Cloud Deployment
-
-- The Google credentials are tied to YOUR Google account - the app will always check YOUR calendar
-- If you need to re-authenticate, run the app locally again and regenerate the cloud credentials
-- Free tier on Render may spin down after inactivity (first request takes ~30 seconds)
+**Note**: Free tier on Render may spin down after inactivity (first request takes ~30 seconds)
 
 ## Troubleshooting
 

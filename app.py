@@ -201,17 +201,57 @@ def _credentials_from_local_flow() -> Optional[Credentials]:
 def get_calendar_service():
     """Authenticate and return Google Calendar service.
 
-    Supports two modes:
-    1. Local development: Uses credentials.json and token.pickle files
-    2. Cloud deployment: Uses GOOGLE_CREDENTIALS environment variable (base64 encoded token)
+    Supports three modes (in priority order):
+    1. Multi-user web OAuth: Uses credentials from user's session (after /auth/connect)
+    2. Single-user cloud: Uses GOOGLE_CREDENTIALS environment variable (legacy)
+    3. Local development: Uses credentials.json and token.pickle files
     """
     creds = None
 
-    # Check for cloud deployment credentials first
+    # MODE 1: Check for user-specific credentials in session (multi-user web OAuth)
+    session_creds = session.get('google_credentials')
+    if session_creds:
+        try:
+            print("[DEBUG] Loading credentials from user session (multi-user mode)...")
+            creds = Credentials(
+                token=session_creds.get('token'),
+                refresh_token=session_creds.get('refresh_token'),
+                token_uri=session_creds.get('token_uri'),
+                client_id=session_creds.get('client_id'),
+                client_secret=session_creds.get('client_secret'),
+                scopes=session_creds.get('scopes')
+            )
+
+            # Refresh if expired
+            if creds.expired and creds.refresh_token:
+                print("[DEBUG] Refreshing expired user token...")
+                creds.refresh(Request())
+                # Update session with new token
+                session['google_credentials']['token'] = creds.token
+                print("[DEBUG] Token refreshed and updated in session")
+
+            print("[DEBUG] Building Calendar API service with user credentials...")
+            service = build('calendar', 'v3', credentials=creds)
+
+            # Validate the service
+            print("[DEBUG] Validating user credentials with test API call...")
+            service.calendarList().list(maxResults=1).execute()
+            print("[DEBUG] User credentials validated successfully!")
+
+            return service
+        except Exception as e:
+            print(f"[ERROR] Error loading user credentials from session: {e}")
+            import traceback
+            traceback.print_exc()
+            # Clear invalid credentials from session
+            session.pop('google_credentials', None)
+            return None
+
+    # MODE 2: Check for single-user cloud deployment credentials (legacy)
     google_creds_env = os.environ.get('GOOGLE_CREDENTIALS')
     if google_creds_env:
         try:
-            print("[DEBUG] Loading credentials from GOOGLE_CREDENTIALS environment variable...")
+            print("[DEBUG] Loading credentials from GOOGLE_CREDENTIALS environment variable (single-user mode)...")
             creds = _credentials_from_env()
             if not creds:
                 print("[ERROR] _credentials_from_env() returned None")
@@ -237,8 +277,8 @@ def get_calendar_service():
             traceback.print_exc()
             return None
 
-    # Local development: use file-based credentials
-    print("[DEBUG] No GOOGLE_CREDENTIALS found, trying local token file...")
+    # MODE 3: Local development - use file-based credentials
+    print("[DEBUG] No session or GOOGLE_CREDENTIALS found, trying local token file...")
     creds = _credentials_from_local_token()
 
     if not creds or not creds.valid:
@@ -261,8 +301,14 @@ def get_calendar_service():
 
 
 def _credentials_missing_for_request() -> bool:
+    """Check if any form of credentials are available."""
+    # Check user session (multi-user mode)
+    if session.get('google_credentials'):
+        return False
+    # Check single-user GOOGLE_CREDENTIALS
     if os.environ.get('GOOGLE_CREDENTIALS'):
         return False
+    # Check local development files
     if os.path.exists(TOKEN_PATH):
         return False
     if os.path.exists(CLIENT_SECRETS_PATH):
@@ -648,30 +694,169 @@ def index():
     return render_template('index.html')
 
 
-@app.route('/auth/link')
-def auth_link():
-    client_config = _client_config_from_env()
-    if not client_config:
+@app.route('/auth/connect')
+def auth_connect():
+    """Initiate OAuth flow for user to connect their Google Calendar."""
+    # Check for OAuth client credentials
+    client_id = os.environ.get('GOOGLE_OAUTH_CLIENT_ID')
+    client_secret = os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET')
+
+    if not client_id or not client_secret:
         return jsonify({
-            'error': 'Missing OAuth client configuration. Set GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET or provide credentials.json.'
-        }), 400
+            'error': 'OAuth not configured. Administrator needs to set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET environment variables.'
+        }), 500
+
+    # Construct redirect URI based on environment
+    redirect_uri = os.environ.get('GOOGLE_OAUTH_REDIRECT_URI')
+    if not redirect_uri:
+        # Auto-detect redirect URI based on request
+        if request.host.startswith('localhost') or request.host.startswith('127.0.0.1'):
+            redirect_uri = f'http://{request.host}/auth/callback'
+        else:
+            redirect_uri = f'https://{request.host}/auth/callback'
+
+    print(f"[DEBUG] OAuth redirect URI: {redirect_uri}")
+
+    # Create OAuth flow
+    client_config = {
+        'web': {
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+            'token_uri': 'https://oauth2.googleapis.com/token',
+            'redirect_uris': [redirect_uri]
+        }
+    }
 
     flow = Flow.from_client_config(client_config, scopes=SCOPES)
-    redirect_uri = os.environ.get('GOOGLE_OAUTH_REDIRECT_URI')
-    if redirect_uri:
-        flow.redirect_uri = redirect_uri
-    elif 'web' in client_config and client_config['web'].get('redirect_uris'):
-        flow.redirect_uri = client_config['web']['redirect_uris'][0]
-    elif 'installed' in client_config and client_config['installed'].get('redirect_uris'):
-        flow.redirect_uri = client_config['installed']['redirect_uris'][0]
+    flow.redirect_uri = redirect_uri
 
+    # Generate authorization URL
     authorization_url, state = flow.authorization_url(
-        access_type='offline',
+        access_type='offline',  # Required to get refresh token
         include_granted_scopes='true',
-        prompt='consent'
+        prompt='consent'  # Force consent to ensure we get refresh token
     )
+
+    # Store state in session for verification
     session['oauth_state'] = state
+    session['oauth_redirect_uri'] = redirect_uri
+
+    print(f"[DEBUG] Generated auth URL, state: {state[:20]}...")
+
     return jsonify({'authorization_url': authorization_url})
+
+
+@app.route('/auth/callback')
+def auth_callback():
+    """Handle OAuth callback from Google."""
+    print("[DEBUG] OAuth callback received")
+
+    # Verify state to prevent CSRF
+    state = request.args.get('state')
+    stored_state = session.get('oauth_state')
+
+    if not state or state != stored_state:
+        print(f"[ERROR] State mismatch: got {state}, expected {stored_state}")
+        return jsonify({'error': 'Invalid state parameter. Possible CSRF attack.'}), 400
+
+    # Check for errors from Google
+    error = request.args.get('error')
+    if error:
+        print(f"[ERROR] OAuth error from Google: {error}")
+        return jsonify({'error': f'Authentication failed: {error}'}), 400
+
+    # Get authorization code
+    code = request.args.get('code')
+    if not code:
+        print("[ERROR] No authorization code received")
+        return jsonify({'error': 'No authorization code received'}), 400
+
+    print(f"[DEBUG] Received authorization code: {code[:20]}...")
+
+    # Exchange code for tokens
+    try:
+        client_id = os.environ.get('GOOGLE_OAUTH_CLIENT_ID')
+        client_secret = os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET')
+        redirect_uri = session.get('oauth_redirect_uri')
+
+        client_config = {
+            'web': {
+                'client_id': client_id,
+                'client_secret': client_secret,
+                'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                'token_uri': 'https://oauth2.googleapis.com/token',
+                'redirect_uris': [redirect_uri]
+            }
+        }
+
+        flow = Flow.from_client_config(client_config, scopes=SCOPES)
+        flow.redirect_uri = redirect_uri
+
+        print("[DEBUG] Exchanging code for tokens...")
+        flow.fetch_token(code=code)
+
+        credentials = flow.credentials
+        print("[DEBUG] Successfully obtained tokens")
+        print(f"[DEBUG] Has refresh token: {bool(credentials.refresh_token)}")
+
+        # Store credentials in session (for multi-user, you'd store in database per user)
+        session['google_credentials'] = {
+            'token': credentials.token,
+            'refresh_token': credentials.refresh_token,
+            'token_uri': credentials.token_uri,
+            'client_id': credentials.client_id,
+            'client_secret': credentials.client_secret,
+            'scopes': credentials.scopes
+        }
+
+        # Validate credentials by making a test API call
+        service = build('calendar', 'v3', credentials=credentials)
+        calendar_list = service.calendarList().list(maxResults=1).execute()
+
+        print("[DEBUG] Credentials validated successfully!")
+
+        # Clean up session state
+        session.pop('oauth_state', None)
+        session.pop('oauth_redirect_uri', None)
+
+        # Return success page or redirect
+        return '''
+        <html>
+            <head><title>Calendar Connected</title></head>
+            <body style="font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 50px;">
+                <h1>✅ Calendar Connected!</h1>
+                <p>Your Google Calendar has been successfully connected.</p>
+                <p><a href="/" style="color: #4285f4; text-decoration: none;">← Back to App</a></p>
+                <script>
+                    // Close this window if it's a popup
+                    if (window.opener) {
+                        window.opener.postMessage({type: 'calendar_connected'}, '*');
+                        setTimeout(() => window.close(), 2000);
+                    }
+                </script>
+            </body>
+        </html>
+        '''
+
+    except Exception as e:
+        print(f"[ERROR] Token exchange failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to exchange authorization code: {str(e)}'}), 500
+
+
+@app.route('/auth/disconnect')
+def auth_disconnect():
+    """Disconnect user's Google Calendar."""
+    session.pop('google_credentials', None)
+    return jsonify({'success': True, 'message': 'Calendar disconnected'})
+
+
+@app.route('/auth/link')
+def auth_link():
+    """Legacy endpoint - redirects to new /auth/connect."""
+    return auth_connect()
 
 
 @app.route('/generate', methods=['POST'])
@@ -1126,14 +1311,47 @@ Return ONLY the modified email text, nothing else. Keep the same general structu
 
 @app.route('/calendar/status')
 def calendar_status():
+    """Check if user's calendar is connected and return connection details."""
     try:
+        # Check if user has credentials
+        has_session_creds = bool(session.get('google_credentials'))
+        has_env_creds = bool(os.environ.get('GOOGLE_CREDENTIALS'))
+        has_local_creds = os.path.exists(TOKEN_PATH)
+
+        # Determine authentication mode
+        auth_mode = None
+        if has_session_creds:
+            auth_mode = 'multi-user'
+        elif has_env_creds:
+            auth_mode = 'single-user'
+        elif has_local_creds:
+            auth_mode = 'local'
+
+        # Try to get calendar service
         service = get_calendar_service()
         if not service:
-            return jsonify({'connected': False}), 500
+            return jsonify({
+                'connected': False,
+                'auth_mode': auth_mode,
+                'requires_auth': not has_session_creds and not has_env_creds and not has_local_creds
+            }), 200
+
+        # Test API call
         calendar = service.calendarList().list(maxResults=1).execute()
-        return jsonify({'connected': True, 'calendar': calendar.get('items', [])})
+        calendars = calendar.get('items', [])
+
+        return jsonify({
+            'connected': True,
+            'auth_mode': auth_mode,
+            'calendar_count': len(calendars),
+            'primary_calendar': calendars[0].get('summary') if calendars else None
+        })
     except Exception as exc:
-        return jsonify({'connected': False, 'error': str(exc)}), 500
+        return jsonify({
+            'connected': False,
+            'error': str(exc),
+            'requires_auth': True
+        }), 500
 
 
 @app.route('/debug/credentials')
@@ -1141,11 +1359,21 @@ def debug_credentials():
     """Debug endpoint to diagnose credential issues."""
     debug_info = {
         'timestamp': datetime.datetime.now(ET).isoformat(),
+        'session': {},
         'environment_variables': {},
         'files': {},
         'credential_parsing': {},
         'service_status': {}
     }
+
+    # Check session credentials (multi-user mode)
+    session_creds = session.get('google_credentials')
+    debug_info['session']['has_credentials'] = bool(session_creds)
+    if session_creds:
+        debug_info['session']['has_token'] = bool(session_creds.get('token'))
+        debug_info['session']['has_refresh_token'] = bool(session_creds.get('refresh_token'))
+        debug_info['session']['has_client_id'] = bool(session_creds.get('client_id'))
+        debug_info['session']['has_client_secret'] = bool(session_creds.get('client_secret'))
 
     # Check environment variables
     google_creds_env = os.environ.get('GOOGLE_CREDENTIALS')
